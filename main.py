@@ -9,8 +9,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Native Google GenAI SDK
+from google import genai
+from google.genai import types
+
 app = FastAPI(title="Phoenix Autonomous Scalping Matrix")
 
+# Enable Wide CORS Access for your Static Frontend App
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,12 +33,14 @@ BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "").strip()
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "").strip()
 BYBIT_BASE_URL = "https://api.bybit.com"
 
+API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+ai_client = genai.Client(api_key=API_KEY) if API_KEY else None
+
 # --- BRAIN: SELF-EVOLVING STATE MEMORY ---
-# Tracks rolling performance to dynamically adjust math boundaries without manual retraining
 SYSTEM_BRAIN = {
-    "rolling_history": [],      # Stores recent signal outcomes
-    "long_bias_modifier": 1.0,   # Dynamically scales based on market regime
-    "short_bias_modifier": 1.0,  # Dynamically scales based on market regime
+    "rolling_history": [],      
+    "long_bias_modifier": 1.0,   
+    "short_bias_modifier": 1.0,  
     "total_executions": 0,
     "successful_executions": 0
 }
@@ -41,7 +48,6 @@ SYSTEM_BRAIN = {
 MARKET_CACHE = {"data": None, "timestamp": 0.0}
 CACHE_TTL_SECONDS = 0.5
 
-# --- HELPER: BYBIT PRIVATE API SIGNING V5 ---
 def generate_bybit_signature(secret: str, params: str, timestamp: str, recv_window: str = "5000") -> str:
     """Generates institutional-grade HMAC256 signatures for sub-second trade routing."""
     val = timestamp + recv_window + params
@@ -52,41 +58,43 @@ async def start_autonomous_feedback_loop():
     """Fires up the background task that acts as the system's brain."""
     asyncio.create_task(evaluate_past_signals_loop())
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    await http_client.aclose()
+
 async def evaluate_past_signals_loop():
-    """
-    Continuous Evolution Engine.
-    Monitors recent signal outcomes and self-adjusts scaling biases dynamically every 60 seconds.
-    """
+    """Continuous Evolution Engine. Adapts biases dynamically every 60 seconds."""
     while True:
         try:
             await asyncio.sleep(60)
             history = SYSTEM_BRAIN["rolling_history"]
             if len(history) < 5:
-                continue # Wait for more data points before adapting
+                continue 
                 
-            # Keep a rolling window of the last 30 signals to stay highly relevant to current time
             recent_set = history[-30:]
             longs = [s for s in recent_set if s["direction"] == "BUY / LONG"]
             shorts = [s for s in recent_set if s["direction"] == "SELL / SHORT"]
             
-            # Evaluate Long Performance Regime
             if longs:
                 long_win_rate = sum(1 for s in longs if s.get("status") == "WIN") / len(longs)
                 if long_win_rate < 0.45:
-                    SYSTEM_BRAIN["long_bias_modifier"] *= 0.95 # Dampen long aggressiveness
+                    SYSTEM_BRAIN["long_bias_modifier"] *= 0.95 
                 elif long_win_rate > 0.65:
                     SYSTEM_BRAIN["long_bias_modifier"] = min(1.2, SYSTEM_BRAIN["long_bias_modifier"] * 1.05)
                     
-            # Evaluate Short Performance Regime
             if shorts:
                 short_win_rate = sum(1 for s in shorts if s.get("status") == "WIN") / len(shorts)
                 if short_win_rate < 0.45:
-                    SYSTEM_BRAIN["short_bias_modifier"] *= 0.95 # Dampen short aggressiveness
+                    SYSTEM_BRAIN["short_bias_modifier"] *= 0.95 
                 elif short_win_rate > 0.65:
                     SYSTEM_BRAIN["short_bias_modifier"] = min(1.2, SYSTEM_BRAIN["short_bias_modifier"] * 1.05)
                     
         except Exception as e:
             print(f"Brain Evolution Matrix Loop Interrupted: {e}")
+
+@app.get("/")
+async def telemetry_check():
+    return {"status": "online", "engine": "Phoenix Alpha NumPy Matrix"}
 
 @app.get("/api/v2/history")
 async def get_autonomous_signals():
@@ -104,9 +112,8 @@ async def get_autonomous_signals():
         usdt_pairs = [t for t in raw_list if t.get("symbol", "").endswith("USDT")]
         
         if not usdt_pairs:
-            return {"signals": []}
+            return {"signals": [], "brain_telemetry": SYSTEM_BRAIN}
 
-        # Vector Extraction via NumPy
         turnovers = np.array([float(t.get("turnover24h", 0) or 0) for t in usdt_pairs])
         prices = np.array([float(t.get("lastPrice", 0) or 0) for t in usdt_pairs])
         changes = np.array([float(t.get("price24hPcnt", 0) or 0) * 100.0 for t in usdt_pairs])
@@ -125,7 +132,6 @@ async def get_autonomous_signals():
             
             direction = "BUY / LONG" if is_long else "SELL / SHORT"
             
-            # APPLY THE BRAIN'S SELF-EVOLVED BIAS MODIFIERS IN REAL TIME
             bias = SYSTEM_BRAIN["long_bias_modifier"] if is_long else SYSTEM_BRAIN["short_bias_modifier"]
             base_win_rate = 0.53 + (abs(change_24h) * 0.015)
             win_rate = min(0.90, max(0.40, base_win_rate * bias))
@@ -148,8 +154,6 @@ async def get_autonomous_signals():
             
             optimized_signals.append(signal_payload)
             
-            # --- HIGH-EV AUTONOMOUS COUPLING ENGINE ---
-            # If a trade presents an extraordinary edge, simulate it instantly into the brain tracker
             if ev_score > 0.45 and len(SYSTEM_BRAIN["rolling_history"]) < 1000:
                 SYSTEM_BRAIN["rolling_history"].append({
                     "symbol": symbol,
@@ -161,8 +165,9 @@ async def get_autonomous_signals():
                     "status": "PENDING"
                 })
                 
-                # OPTIONAL: Un-comment this line when your API keys are live in your environment
-                # asyncio.create_task(execute_bybit_market_order(symbol, direction, "0.01"))
+                # Dynamic Trigger Hook (Executes when live credentials are set)
+                if BYBIT_API_KEY and BYBIT_API_SECRET:
+                    asyncio.create_task(execute_bybit_market_order(symbol, direction, "0.01"))
 
         MARKET_CACHE["data"] = optimized_signals
         MARKET_CACHE["timestamp"] = current_time
@@ -174,20 +179,13 @@ async def get_autonomous_signals():
         return {"signals": MARKET_CACHE["data"] or [], "brain_telemetry": SYSTEM_BRAIN}
 
 async def execute_bybit_market_order(symbol: str, side: str, qty: str):
-    """
-    Sub-second Authenticated Private Order Execution Router.
-    Fires direct contract positions using secure encryption protocols directly to Bybit.
-    """
-    if not BYBIT_API_KEY or !BYBIT_API_SECRET:
-        return
-        
+    """Sub-second Authenticated Private Order Execution Router."""
     endpoint = "/v5/order/create"
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
     
-    # Format according to precise Bybit V5 specifications
     action = "Buy" if "LONG" in side else "Sell"
-    payload_str = f'{{"category":"linear","symbol":"{symbol}","side":"{action}","orderType":"Market","qty":"{qty}"}}'
+    payload_str = f'{Gamma}"category":"linear","symbol":"{symbol}","side":"{action}","orderType":"Market","qty":"{qty}"{Gamma}'.replace("Gamma", '"')
     
     signature = generate_bybit_signature(BYBIT_API_SECRET, payload_str, timestamp, recv_window)
     
@@ -200,10 +198,36 @@ async def execute_bybit_market_order(symbol: str, side: str, qty: str):
     }
     
     try:
-        r = await http_client.post(f"{BYBIT_BASE_URL}{endpoint}", headers=headers, data=payload_str)
+        r = await http_client.post(f"{BYBIT_BASE_URL}{endpoint}", headers=headers, content=payload_str)
         if r.status_code == 200:
             SYSTEM_BRAIN["total_executions"] += 1
             print(f"🚀 Institutional Order Penetration Confirmed: {symbol} -> {action}")
-    catch Exception as e:
+    except Exception as e:
         print(f"Bybit Core Execution Pipe Blocked: {e}")
-              
+
+class PromptRequest(BaseModel):
+    prompt: str
+
+@app.post("/api/v2/chat")
+async def ultra_grounded_chat(request: PromptRequest):
+    if not ai_client:
+        return {"reply": "Core Matrix Engine Disconnected."}
+    try:
+        prompt_text = request.prompt
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You are the Phoenix High-Frequency Oracle. Analyze active market telemetry "
+                    "with zero fluff. Ground statements using real-time structural web search access immediately."
+                ),
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                max_output_tokens=250,
+                temperature=0.0
+            )
+        )
+        return {"reply": response.text.strip()}
+    except Exception as e:
+        return {"reply": f"Processing Node Interruption: {str(e)}"}
+    
